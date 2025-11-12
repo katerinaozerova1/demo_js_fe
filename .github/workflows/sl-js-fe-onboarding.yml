@@ -42,8 +42,7 @@ jobs:
             --tokenfile ./sltoken.txt \
             --appname demo_js_fe \
             --branch main \
-            --build "$(date +"%y%m%d_%H%M")" \
-            --output buildSessionId
+            --build "$(date +"%y%m%d_%H%M")"
 
       - name: Scan and instrument code
         run: |
