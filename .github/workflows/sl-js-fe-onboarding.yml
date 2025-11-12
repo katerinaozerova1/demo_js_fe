@@ -1,108 +1,92 @@
-name: SeaLights Onboarding - JS FE App
+name: SeaLights Onboarding - JS FE
 
 on:
-  workflow_dispatch: # Manual trigger
+  workflow_dispatch:
 
 jobs:
   sealights-onboarding:
     runs-on: ubuntu-latest
 
     env:
-      NODE_VERSION: 18.20.8
-      NPM_VERSION: 10.8.2
-      SL_APP_NAME: demo_js_fe
-      SL_BRANCH: main
-      SL_LAB_ID: nodetests
-      SL_WORKSPACE: ./app
-      SL_INSTRUMENTED: ./sl_app
-      SL_TOKEN: ${{ secrets.SL_TOKEN }}
+      HUSKY: 0
+      PORT: 8089
+      CYPRESS_SL_ENABLE_REMOTE_AGENT: true
+      CYPRESS_SL_TEST_STAGE: "Cypress Tests"
+      CYPRESS_SL_LAB_ID: "nodetests"
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 18.20.8
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: 18.20.8
 
-      - name: Verify npm version
-        run: |
-          npm install -g npm@${{ env.NPM_VERSION }}
-          npm --version
-          node --version
+      - name: Use npm 10.8.2
+        run: npm install -g npm@10.8.2
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          export HUSKY=0
+          npm ci
 
-      - name: Install SeaLights Node.js agent
+      - name: Download SeaLights Node.js agent
         run: npm install slnodejs
 
-      - name: Create token file
-        run: echo "${{ env.SL_TOKEN }}" > sltoken.txt
+      - name: Create SL token file
+        run: echo "${{ secrets.SL_TOKEN }}" > sltoken.txt
 
       - name: Configure SeaLights build
         run: |
           npx slnodejs config \
             --tokenfile ./sltoken.txt \
-            --appname $SL_APP_NAME \
-            --branch $SL_BRANCH \
-            --build "$(date +'%y%m%d_%H%M')" \
-            --buildsessionidfile buildSessionId.txt
+            --appname demo_js_fe \
+            --branch main \
+            --build "$(date +"%y%m%d_%H%M")" \
+            --output buildSessionId
 
-      - name: Scan and instrument the code
+      - name: Scan and instrument code
         run: |
           npx slnodejs scan \
             --tokenfile ./sltoken.txt \
-            --buildsessionidfile buildSessionId.txt \
-            --labid $SL_LAB_ID \
+            --buildsessionidfile buildSessionId \
+            --labid nodetests \
             --instrumentForBrowsers \
-            --workspacepath $SL_WORKSPACE \
-            --outputpath $SL_INSTRUMENTED \
+            --workspacepath ./app \
+            --outputpath sl_app \
             --scm none \
             --es6Modules
 
-      - name: Replace original app with instrumented version
+      - name: Replace original app with instrumented code
         run: |
           mv app app_original
           mv sl_app app
 
-      - name: Start the app in background
+      - name: Start instrumented app in background
         run: |
-          PORT=8089 npm start &
-          # Wait until app is reachable
-          for i in {1..20}; do
-            if curl -s http://localhost:8089 > /dev/null; then
-              echo "App is up!"
-              break
-            fi
-            echo "Waiting for app to start..."
-            sleep 5
-          done
+          nohup npm start > server.log 2>&1 &
+          sleep 10
+          curl -f http://localhost:${PORT} || (echo "App failed to start" && cat server.log && exit 1)
 
-      - name: Install SeaLights Cypress plugin
-        run: npm install --save-dev sealights-cypress-plugin
+      - name: Install Cypress and SeaLights plugin
+        run: |
+          npm install --save-dev cypress sealights-cypress-plugin
+
+      - name: Export Cypress environment variables
+        run: |
+          export CYPRESS_SL_TOKEN="${{ secrets.SL_TOKEN }}"
+          export CYPRESS_SL_BUILD_SESSION_ID=$(cat buildSessionId)
+          echo "Using build session ID: $CYPRESS_SL_BUILD_SESSION_ID"
 
       - name: Run Cypress tests with SeaLights plugin
-        env:
-          CYPRESS_SL_TOKEN: ${{ env.SL_TOKEN }}
-          CYPRESS_SL_BUILD_SESSION_ID: $(cat buildSessionId.txt)
-          CYPRESS_SL_ENABLE_REMOTE_AGENT: true
-          CYPRESS_SL_TEST_STAGE: "Cypress Tests"
-          CYPRESS_SL_LAB_ID: ${{ env.SL_LAB_ID }}
         run: |
-          # Run tests and log output
-          npx sealights-cypress-plugin npx cypress run 2>&1 | tee cypress_run_log.txt
+          export CYPRESS_SL_TOKEN="${{ secrets.SL_TOKEN }}"
+          export CYPRESS_SL_BUILD_SESSION_ID=$(cat buildSessionId)
+          npx sealights-cypress-plugin npx cypress run --spec "cypress/e2e/**/*.cy.js" | tee cypress_output.txt
 
-      - name: Stop background processes
+      - name: Stop background app
         if: always()
         run: |
-          pkill -f "npm start" || true
-          echo "Stopped running app."
-
-      - name: Upload Cypress logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cypress-logs
-          path: cypress_run_log.txt
+          pkill node || true
+          echo "Stopped instrumented app"
