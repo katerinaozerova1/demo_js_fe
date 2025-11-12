@@ -26,10 +26,9 @@ jobs:
       - name: Use npm 10.8.2
         run: npm install -g npm@10.8.2
 
-      - name: Install dependencies
+      - name: Disable Husky in CI
         run: |
-          export HUSKY=0
-          npm ci
+          echo "HUSKY=0" >> $GITHUB_ENV
 
       - name: Download SeaLights Node.js agent
         run: npm install slnodejs
