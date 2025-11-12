@@ -1,0 +1,108 @@
+name: SeaLights Onboarding - JS FE App
+
+on:
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  sealights-onboarding:
+    runs-on: ubuntu-latest
+
+    env:
+      NODE_VERSION: 18.20.8
+      NPM_VERSION: 10.8.2
+      SL_APP_NAME: demo_js_fe
+      SL_BRANCH: main
+      SL_LAB_ID: nodetests
+      SL_WORKSPACE: ./app
+      SL_INSTRUMENTED: ./sl_app
+      SL_TOKEN: ${{ secrets.SL_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify npm version
+        run: |
+          npm install -g npm@${{ env.NPM_VERSION }}
+          npm --version
+          node --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install SeaLights Node.js agent
+        run: npm install slnodejs
+
+      - name: Create token file
+        run: echo "${{ env.SL_TOKEN }}" > sltoken.txt
+
+      - name: Configure SeaLights build
+        run: |
+          npx slnodejs config \
+            --tokenfile ./sltoken.txt \
+            --appname $SL_APP_NAME \
+            --branch $SL_BRANCH \
+            --build "$(date +'%y%m%d_%H%M')" \
+            --buildsessionidfile buildSessionId.txt
+
+      - name: Scan and instrument the code
+        run: |
+          npx slnodejs scan \
+            --tokenfile ./sltoken.txt \
+            --buildsessionidfile buildSessionId.txt \
+            --labid $SL_LAB_ID \
+            --instrumentForBrowsers \
+            --workspacepath $SL_WORKSPACE \
+            --outputpath $SL_INSTRUMENTED \
+            --scm none \
+            --es6Modules
+
+      - name: Replace original app with instrumented version
+        run: |
+          mv app app_original
+          mv sl_app app
+
+      - name: Start the app in background
+        run: |
+          PORT=8089 npm start &
+          # Wait until app is reachable
+          for i in {1..20}; do
+            if curl -s http://localhost:8089 > /dev/null; then
+              echo "App is up!"
+              break
+            fi
+            echo "Waiting for app to start..."
+            sleep 5
+          done
+
+      - name: Install SeaLights Cypress plugin
+        run: npm install --save-dev sealights-cypress-plugin
+
+      - name: Run Cypress tests with SeaLights plugin
+        env:
+          CYPRESS_SL_TOKEN: ${{ env.SL_TOKEN }}
+          CYPRESS_SL_BUILD_SESSION_ID: $(cat buildSessionId.txt)
+          CYPRESS_SL_ENABLE_REMOTE_AGENT: true
+          CYPRESS_SL_TEST_STAGE: "Cypress Tests"
+          CYPRESS_SL_LAB_ID: ${{ env.SL_LAB_ID }}
+        run: |
+          # Run tests and log output
+          npx sealights-cypress-plugin npx cypress run 2>&1 | tee cypress_run_log.txt
+
+      - name: Stop background processes
+        if: always()
+        run: |
+          pkill -f "npm start" || true
+          echo "Stopped running app."
+
+      - name: Upload Cypress logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-logs
+          path: cypress_run_log.txt
