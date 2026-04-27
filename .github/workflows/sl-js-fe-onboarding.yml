@@ -149,6 +149,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xvfb
 
+      # Cypress 10+ requires a root config file (e.g. cypress.config.js). If your fork omitted it,
+      # generate the same minimal shape as cypress-io/cypress-example-kitchensink plus baseUrl for PORT.
+      - name: Ensure Cypress root config exists
+        run: |
+          if [ -f cypress.config.js ] || [ -f cypress.config.mjs ] || [ -f cypress.config.ts ] || [ -f cypress.config.cjs ]; then
+            echo "Cypress config already present"
+            exit 0
+          fi
+          printf '%s\n' \
+            "module.exports = {" \
+            "  projectId: '4b7344'," \
+            "  e2e: {" \
+            "    baseUrl: 'http://127.0.0.1:8089'," \
+            "    specPattern: 'cypress/e2e/**/*.cy.js'," \
+            "    supportFile: 'cypress/support/e2e.js'," \
+            "  }," \
+            "};" \
+            > cypress.config.js
+
       - name: Verify Cypress binary
         run: npx cypress install
 
