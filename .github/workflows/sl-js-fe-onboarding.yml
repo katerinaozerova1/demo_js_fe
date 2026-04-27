@@ -78,11 +78,13 @@ jobs:
           echo "Using build session ID: $CYPRESS_SL_BUILD_SESSION_ID"
 
       - name: Run Cypress tests with SeaLights plugin
+        env:
+          CYPRESS_SL_ENABLE_REMOTE_AGENT: "false"
         run: |
           export CYPRESS_SL_TOKEN="${{ secrets.SL_TOKEN }}"
           export CYPRESS_SL_BUILD_SESSION_ID=$(cat buildSessionId)
           npx sealights-cypress-plugin npx cypress run --spec "cypress/e2e/**/*.cy.js" | tee cypress_output.txt
-
+          
       - name: Stop background app
         if: always()
         run: |
