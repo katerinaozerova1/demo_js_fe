@@ -24,12 +24,14 @@ concurrency:
 
 env:
   HUSKY: 0
-  # Must match cypress (CYPRESS_BASE_URL) and scripts/start.js (PORT)
-  PORT: 8089
-  CYPRESS_BASE_URL: http://127.0.0.1:8089
+  # Kitchensink specs hardcode cy.visit('http://localhost:8080/...') — keep PORT at 8080.
+  PORT: 8080
+  CYPRESS_BASE_URL: http://127.0.0.1:8080
   CYPRESS_SL_TEST_STAGE: "Cypress Tests"
   CYPRESS_SL_LAB_ID: "nodetests"
   CYPRESS_SL_ENABLE_REMOTE_AGENT: "false"
+  # Avoid “tput: No value for $TERM” noise from Cypress/Electron in CI
+  TERM: xterm
 
 jobs:
   sealights-onboarding:
@@ -161,7 +163,7 @@ jobs:
             "module.exports = {" \
             "  projectId: '4b7344'," \
             "  e2e: {" \
-            "    baseUrl: 'http://127.0.0.1:8089'," \
+            "    baseUrl: 'http://127.0.0.1:8080'," \
             "    specPattern: 'cypress/e2e/**/*.cy.js'," \
             "    supportFile: 'cypress/support/e2e.js'," \
             "  }," \
