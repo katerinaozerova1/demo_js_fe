@@ -1,50 +1,105 @@
+# Place as: .github/workflows/sealights-onboarding-js-fe.yml
+# Repo: https://github.com/katerinaozerova1/demo_js_fe
+#
+# SeaLights Node FE: scan+instrument app/ → "deploy" instrumented static files into app/ →
+# serve with npm start → Cypress via sealights-cypress-plugin (browser agent, not remote).
+#
+# Fixes vs the old sample:
+# - CYPRESS_SL_ENABLE_REMOTE_AGENT is false for the job (and was only partially overridden before).
+# - CYPRESS_SL_BUILD_SESSION_ID is written to GITHUB_ENV (the old "export" step does not apply to the next step).
+# - cypress run uses a virtual display (xvfb) + --headed so a real browser process is used in CI.
+# - Branch, base URL, commit+push of a non-comment stamp, stricter app health check.
+
 name: SeaLights Onboarding - JS FE
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: sealights-fe-onboarding-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  HUSKY: 0
+  # Must match cypress (CYPRESS_BASE_URL) and scripts/start.js (PORT)
+  PORT: 8089
+  CYPRESS_BASE_URL: http://127.0.0.1:8089
+  CYPRESS_SL_TEST_STAGE: "Cypress Tests"
+  CYPRESS_SL_LAB_ID: "nodetests"
+  CYPRESS_SL_ENABLE_REMOTE_AGENT: "false"
+
 jobs:
   sealights-onboarding:
     runs-on: ubuntu-latest
 
-    env:
-      HUSKY: 0
-      PORT: 8089
-      CYPRESS_SL_ENABLE_REMOTE_AGENT: true
-      CYPRESS_SL_TEST_STAGE: "Cypress Tests"
-      CYPRESS_SL_LAB_ID: "nodetests"
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
-      - name: Setup Node.js 18.20.8
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18.20.8
+          node-version: "20"
 
       - name: Use npm 10.8.2
         run: npm install -g npm@10.8.2
 
       - name: Disable Husky in CI
+        run: echo "HUSKY=0" >> $GITHUB_ENV
+
+      - name: Install dependencies (incl. slnodejs, cypress, sealights-cypress-plugin)
+        run: npm install
+
+      # --- Non-operational change: real <script> so SL sees a code change (not comment-only) ---
+      - name: Inject per-run stamp into app/index.html
         run: |
-          echo "HUSKY=0" >> $GITHUB_ENV
+          node <<'NODE'
+          const fs = require("fs");
+          const p = "app/index.html";
+          const stamp = "run_${{ github.run_id }}_${{ github.run_attempt }}";
+          let h = fs.readFileSync(p, "utf8");
+          const inj = "\n<script>window.__SL_DEMO_STAMP=" + JSON.stringify(stamp) + ";</script>\n";
+          if (h.includes("__SL_DEMO_STAMP")) {
+            h = h.replace(/<script>window\.__SL_DEMO_STAMP=[\s\S]*?<\/script>/, inj.trim());
+          } else {
+            h = h.replace(/<\/body>/i, inj + "</body>");
+          }
+          fs.writeFileSync(p, h);
+          NODE
 
-      - name: Download SeaLights Node.js agent
-        run: npm install slnodejs
+      - name: Commit and push build stamp
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app/index.html
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "chore: SeaLights FE stamp in app (run ${{ github.run_id }})"
+          git push
 
-      - name: Create SL token file
-        run: echo "${{ secrets.SL_TOKEN }}" > sltoken.txt
+      - name: Create SeaLights token file
+        run: |
+          echo "${{ secrets.SL_TOKEN }}" > sltoken.txt
+          chmod 600 sltoken.txt
 
       - name: Configure SeaLights build
         run: |
           npx slnodejs config \
             --tokenfile ./sltoken.txt \
             --appname demo_js_fe \
-            --branch main \
+            --branch "${{ github.ref_name }}" \
             --build "$(date +"%y%m%d_%H%M")"
 
-      - name: Scan and instrument code
+      - name: Scan and instrument browser FE
         run: |
           npx slnodejs scan \
             --tokenfile ./sltoken.txt \
@@ -56,37 +111,67 @@ jobs:
             --scm none \
             --es6Modules
 
-      - name: Replace original app with instrumented code
+      - name: Deploy instrumented app (replace static app folder)
         run: |
+          rm -rf app_original
           mv app app_original
           mv sl_app app
 
-      - name: Start instrumented app in background
+      - name: Expose build session to Cypress
         run: |
+          # Next steps automatically receive CYPRESS_SL_BUILD_SESSION_ID
+          bsid=$(tr -d ' \t\n\r' < buildSessionId)
+          echo "CYPRESS_SL_BUILD_SESSION_ID=$bsid" >> "$GITHUB_ENV"
+          test -n "$bsid" || (echo "buildSessionId is empty" && exit 1)
+
+      - name: Start instrumented app
+        id: start_app
+        run: |
+          set -e
           nohup npm start > server.log 2>&1 &
-          sleep 10
-          curl -f http://localhost:${PORT} || (echo "App failed to start" && cat server.log && exit 1)
+          echo $! > server.pid
+          for i in $(seq 1 90); do
+            if curl -fsS "http://127.0.0.1:${PORT}/" > /dev/null 2>&1; then
+              echo "ok=true" >> "$GITHUB_OUTPUT"
+              echo "App is up on port ${PORT}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "App did not become ready; server.log:" >&2
+          cat server.log >&2 || true
+          exit 1
 
-      - name: Install Cypress and SeaLights plugin
+      - name: Install Xvfb (virtual display for headed browser in CI)
         run: |
-          npm install --save-dev cypress sealights-cypress-plugin
+          sudo apt-get update
+          sudo apt-get install -y xvfb
 
-      - name: Export Cypress environment variables
-        run: |
-          export CYPRESS_SL_TOKEN="${{ secrets.SL_TOKEN }}"
-          export CYPRESS_SL_BUILD_SESSION_ID=$(cat buildSessionId)
-          echo "Using build session ID: $CYPRESS_SL_BUILD_SESSION_ID"
+      - name: Verify Cypress binary
+        run: npx cypress install
 
-      - name: Run Cypress tests with SeaLights plugin
+      - name: Run Cypress with SeaLights plugin
         env:
-          CYPRESS_SL_ENABLE_REMOTE_AGENT: "false"
+          CYPRESS_SL_TOKEN: ${{ secrets.SL_TOKEN }}
         run: |
-          export CYPRESS_SL_TOKEN="${{ secrets.SL_TOKEN }}"
-          export CYPRESS_SL_BUILD_SESSION_ID=$(cat buildSessionId)
-          npx sealights-cypress-plugin npx cypress run --spec "cypress/e2e/**/*.cy.js" | tee cypress_output.txt
-          
-      - name: Stop background app
+          if [ -z "$CYPRESS_SL_BUILD_SESSION_ID" ]; then
+            echo "CYPRESS_SL_BUILD_SESSION_ID is not set" >&2
+            exit 1
+          fi
+          set -e
+          # Headed + virtual framebuffer = real browser for SeaLights agent / test stage; plugin wraps this command
+          xvfb-run -a --server-args='-screen 0 1280x1024x24' \
+            npx sealights-cypress-plugin \
+            npx cypress run --headed --browser electron \
+            --spec "cypress/e2e/**/*.cy.js" 2>&1 | tee cypress_output.txt
+
+      - name: Stop app and remove token file
         if: always()
         run: |
-          pkill node || true
-          echo "Stopped instrumented app"
+          if [ -f server.pid ]; then
+            kill "$(cat server.pid)" 2>/dev/null || true
+          fi
+          pkill -f "serve" 2>/dev/null || true
+          pkill -f "scripts/start" 2>/dev/null || true
+          rm -f sltoken.txt
+          echo "Cleanup done"
