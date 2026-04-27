@@ -53,8 +53,10 @@ jobs:
       - name: Disable Husky in CI
         run: echo "HUSKY=0" >> $GITHUB_ENV
 
+      # package.json "prepare" runs `node .husky/install.mjs` — that file is often missing; HUSKY=0
+      # does not skip a custom prepare script. --ignore-scripts avoids the failure; Cypress is installed explicitly next.
       - name: Install dependencies (incl. slnodejs, cypress, sealights-cypress-plugin)
-        run: npm install
+        run: npm install --ignore-scripts
 
       # --- Non-operational change: real <script> so SL sees a code change (not comment-only) ---
       - name: Inject per-run stamp into app/index.html
